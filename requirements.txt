@@ -1,0 +1,4 @@
+pynput>=1.8
+opencv-python-headless>=4.10
+pillow>=10
+numpy
