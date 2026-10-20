@@ -20,7 +20,9 @@ jobs:
           pip install pyinstaller
 
       - name: Build
-        run: pyinstaller --onefile --name tap_to_skip tap_to_skip.py
+        run: |
+          python tapicon.py icon.ico
+          pyinstaller --onefile --noconsole --icon icon.ico --hidden-import pystray._win32 --name tap_to_skip tap_to_skip.py
 
       - uses: actions/upload-artifact@v4
         with:
