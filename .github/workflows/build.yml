@@ -1,4 +1,4 @@
-name: Build Windows exe
+name: Build Tap to skip (Windows exe)
 
 on:
   push:
@@ -20,9 +20,9 @@ jobs:
           pip install pyinstaller
 
       - name: Build
-        run: pyinstaller --onefile --name tap_to_click tap_to_click.py
+        run: pyinstaller --onefile --name tap_to_skip tap_to_skip.py
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tap_to_click-windows
-          path: dist/tap_to_click.exe
+          name: tap_to_skip-windows
+          path: dist/tap_to_skip.exe

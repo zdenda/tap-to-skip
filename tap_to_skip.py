@@ -1,5 +1,5 @@
 """
-tap_to_click  -  Pixel Buds A double tap -> mouse click (Windows)
+tap_to_skip  -  Pixel Buds A double tap -> skip the YouTube ad (Windows)
 
 Modes
 -----
@@ -11,7 +11,7 @@ Modes
                    and click its centre when found. Nothing is clicked if
                    the button never appears.
 
-Test mode:   tap_to_click.exe --test
+Test mode:   tap_to_skip.exe --test
    Waits 5 seconds (switch to the browser), takes one screenshot and reports
    how well skip.png matches and where. Run it while an ad with a visible
    Skip button is on screen, and once with no ad to check for false matches.
