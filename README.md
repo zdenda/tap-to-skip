@@ -1,3 +1,5 @@
+># 🤖 Disclaimer: Entirely vibe coded; use at your own risk and may the vibes be ever in your favor.
+
 # Tap to skip
 
 Skips YouTube ads on a Windows PC for you. Two ways:
