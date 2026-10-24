@@ -22,6 +22,14 @@ Modes
    the buds and the program's own clicks do not count as activity) and
    the active window's title contains "YouTube".
 
+Several screens
+---------------
+The lower-right part (SEARCH_AREA) of every screen is searched; automatic
+mode searches only the screen the YouTube window is on. Screens may have
+different scaling: skip.png is assumed to come from one of the current
+screens, and for the other screens it is resized by the ratio of their
+scaling settings (e.g. 100% / 125% = 0.8).
+
 Tray menu
 ---------
 Paused               stop reacting to double taps (they skip tracks again)
@@ -203,22 +211,84 @@ def already_running():
         return False
 
 
-def foreground_title():
-    """Title of the active window, or "" when it cannot be read."""
+def foreground_window():
+    """(handle, title) of the active window; (None, "") when unavailable."""
     try:
         user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
         length = user32.GetWindowTextLengthW(hwnd)
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
-        return buf.value
+        return hwnd, buf.value
     except Exception:
-        return ""
+        return None, ""
 
 
 def window_matches(title):
     title = title.lower()
     return any(keyword in title for keyword in AUTO_WINDOW_KEYWORDS)
+
+
+def window_screen(hwnd):
+    """Handle of the screen that shows most of the window, or None."""
+    try:
+        return ctypes.windll.user32.MonitorFromWindow(hwnd, 2) or None  # MONITOR_DEFAULTTONEAREST
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------- screens
+class RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+def screen_dpi(hmon):
+    """Effective DPI of a screen (96 = 100%, 120 = 125%, 144 = 150%), or None."""
+    try:
+        x, y = ctypes.c_uint(), ctypes.c_uint()
+        ok = ctypes.windll.shcore.GetDpiForMonitor(
+            ctypes.c_void_p(hmon), 0, ctypes.byref(x), ctypes.byref(y))  # MDT_EFFECTIVE_DPI
+        return (x.value or None) if ok == 0 else None
+    except Exception:
+        return None
+
+
+def screens():
+    """One (handle, left, top, right, bottom, dpi) per screen, in physical
+    pixels. Empty when the information is not available (not on Windows)."""
+    found = []
+    try:
+        user32 = ctypes.windll.user32
+        proc_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.POINTER(RECT), ctypes.c_void_p)
+
+        def collect(hmon, hdc, rect, lparam):
+            r = rect.contents
+            found.append((hmon, r.left, r.top, r.right, r.bottom, screen_dpi(hmon)))
+            return 1
+
+        user32.EnumDisplayMonitors(None, None, proc_type(collect), None)
+    except Exception:
+        pass
+    return found
+
+
+def virtual_origin():
+    """Screen coordinates of the top-left pixel of a grab of all screens."""
+    try:
+        user32 = ctypes.windll.user32
+        return int(user32.GetSystemMetrics(76)), int(user32.GetSystemMetrics(77))
+    except Exception:                       # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN
+        return 0, 0
+
+
+def describe_screens(all_screens):
+    parts = []
+    for n, (hmon, l, t, r, b, dpi) in enumerate(all_screens, start=1):
+        pct = f" at {dpi / 96 * 100:.0f}%" if dpi else ""
+        parts.append(f"{n}: {r - l}x{b - t}{pct}")
+    return ", ".join(parts) or "unknown"
 
 
 # ------------------------------------------------------------- idle time
@@ -333,20 +403,40 @@ def reload_template():
     global template
     path = os.path.join(base_dir(), "skip.png")
     template = load_template(path) if os.path.exists(path) else None
+    _scaled.clear()
     if template is None:
         log.info("skip.png not found or unreadable: cursor mode")
     else:
         log.info("skip.png loaded (%dx%d px)", template.shape[1], template.shape[0])
 
 
-def grab_search_area():
-    """Screenshot the search area. Returns (grayscale image, x offset, y offset)."""
-    screen = ImageGrab.grab()
-    w, h = screen.size
-    l, t, r, b = SEARCH_AREA
-    box = (int(w * l), int(h * t), int(w * r), int(h * b))
-    gray = cv2.cvtColor(np.array(screen.crop(box)), cv2.COLOR_RGB2GRAY)
-    return gray, box[0], box[1]
+_scaled = {}
+
+
+def scaled_template(tmpl, scale):
+    """tmpl resized by scale (cached)."""
+    key = (id(tmpl), scale)
+    if key not in _scaled:
+        if scale == 1.0:
+            _scaled[key] = tmpl
+        else:
+            h, w = tmpl.shape
+            _scaled[key] = cv2.resize(
+                tmpl, (max(8, round(w * scale)), max(4, round(h * scale))),
+                interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+    return _scaled[key]
+
+
+def scales_for(dpi, all_dpis):
+    """Template sizes to try on a screen: as is (skip.png was made on a
+    screen with this scaling) plus the ratio to every other screen's
+    scaling (it was made on one of those)."""
+    scales = {1.0}
+    if dpi:
+        for other in all_dpis:
+            if other and other != dpi:
+                scales.add(round(dpi / other, 3))
+    return sorted(scales)
 
 
 def match(gray, tmpl, x_offset=0, y_offset=0):
@@ -360,9 +450,40 @@ def match(gray, tmpl, x_offset=0, y_offset=0):
     return centre, float(score)
 
 
-def find_on_screen(tmpl):
-    gray, ox, oy = grab_search_area()
-    return match(gray, tmpl, ox, oy)
+last_match = {}
+
+
+def find_on_screen(tmpl, only_screen=None):
+    """Look for tmpl in the search area of every screen, or of one screen
+    given by its handle. Returns ((x, y), score) in screen coordinates;
+    details of the best match are kept in last_match."""
+    global last_match
+    shot = ImageGrab.grab(all_screens=True)
+    ox, oy = virtual_origin()
+    full = cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2GRAY)
+    H, W = full.shape
+    all_screens = screens() or [(None, ox, oy, ox + W, oy + H, None)]
+    if only_screen not in [s[0] for s in all_screens]:
+        only_screen = None                      # unknown handle: search everything
+    dpis = [s[5] for s in all_screens]
+    best = {"pos": None, "score": 0.0, "scale": 1.0, "screen": 0}
+    for n, (hmon, l, t, r, b, dpi) in enumerate(all_screens, start=1):
+        if only_screen is not None and hmon != only_screen:
+            continue
+        al, at, ar, ab = SEARCH_AREA
+        w, h = r - l, b - t
+        x0, y0 = max(l + int(w * al) - ox, 0), max(t + int(h * at) - oy, 0)
+        x1, y1 = min(l + int(w * ar) - ox, W), min(t + int(h * ab) - oy, H)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        region = full[y0:y1, x0:x1]
+        for scale in scales_for(dpi, dpis):
+            pos, score = match(region, scaled_template(tmpl, scale), x0 + ox, y0 + oy)
+            if pos and score > best["score"]:
+                best = {"pos": pos, "score": score, "scale": scale, "screen": n}
+    best["screens"] = all_screens
+    last_match = best
+    return best["pos"], best["score"]
 
 
 def click_at(x, y):
@@ -438,7 +559,8 @@ def auto_loop():
         time.sleep(AUTO_INTERVAL)
         if paused or not auto_mode or template is None:
             continue
-        if not window_matches(foreground_title()):
+        hwnd, title = foreground_window()
+        if not window_matches(title):
             continue
         idle_s = idle.seconds()
         if idle_s < AUTO_IDLE_SECONDS:
@@ -446,7 +568,7 @@ def auto_loop():
         if not search_lock.acquire(blocking=False):
             continue                       # a double-tap search is running
         try:
-            pos, score = find_on_screen(template)
+            pos, score = find_on_screen(template, only_screen=window_screen(hwnd))
         finally:
             search_lock.release()
         if not pos or score < MATCH_THRESHOLD:
@@ -473,16 +595,22 @@ def run_test(delay=5):
                     "nothing to test.\n\nMode: click at the cursor position.")
         return
     time.sleep(delay)
-    title = foreground_title()
+    hwnd, title = foreground_window()
     idle_s = idle.seconds()
     pos, score = find_on_screen(template)
+    m = last_match
+    handles = [s[0] for s in m["screens"]]
+    win_screen = window_screen(hwnd)
+    on = f", on screen {handles.index(win_screen) + 1}" if win_screen in handles else ""
+    where = f" on screen {m['screen']}, template scale {m['scale']:g}" if pos else ""
     verdict = "FOUND" if score >= MATCH_THRESHOLD else "NOT FOUND"
     message_box(f"skip.png: {template.shape[1]}x{template.shape[0]} px\n"
-                f"Best match: score {score:.2f} at {pos}\n"
+                f"Screens: {describe_screens(m['screens'])}\n"
+                f"Best match: score {score:.2f} at {pos}{where}\n"
                 f"Threshold: {MATCH_THRESHOLD}\n"
                 f"Result: {verdict}\n\n"
                 f"Active window: {title[:70]}\n"
-                f"Counts as YouTube: {'yes' if window_matches(title) else 'no'}\n"
+                f"Counts as YouTube: {'yes' if window_matches(title) else 'no'}{on}\n"
                 f"Idle: {idle_s:.0f} s (automatic mode needs {AUTO_IDLE_SECONDS:g} s)")
 
 

@@ -23,8 +23,8 @@ A single tap (play/pause) is never touched.
 
 ## Automatic mode
 
-Every 1.5 seconds the program looks at the lower-right part of the screen and
-clicks the Skip button if it is there. To stay out of your way it only does
+Every 1.5 seconds the program looks at the lower-right part of the screen the
+YouTube window is on and clicks the Skip button if it is there. To stay out of your way it only does
 this when **both** of these are true:
 
 - the mouse and keyboard have not been touched for 30 seconds (taps on the
@@ -47,6 +47,15 @@ away. Automatic mode is on by default and the choice is remembered in
 | Test skip.png (in 5 s) | Switch to the browser with an ad on screen; after 5 seconds a message shows the match score, the active window's title and the idle time. |
 | Reload skip.png | Pick up a changed `skip.png` without restarting. |
 | Quit | Stop the program. |
+
+## Several screens
+
+The double tap searches the lower-right part of every screen; automatic mode
+only the screen with the YouTube window. Screens with different scaling
+(for example a 4K screen at 125% and a second one at 100%) are fine:
+`skip.png` is assumed to come from one of the current screens, and for the
+others it is resized by the ratio of their scaling settings. The test message
+lists the screens, their scaling and which screen the match was found on.
 
 ## Notes
 
